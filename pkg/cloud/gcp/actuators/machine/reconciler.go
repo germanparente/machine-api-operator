@@ -112,6 +112,8 @@ func (r *Reconciler) checkQuota(guestAccelerators []machinev1.GCPGPUConfig) erro
 	// preemptible instances have separate quota
 	if r.providerSpec.Preemptible {
 		metric = "PREEMPTIBLE_" + metric
+	} else if r.providerSpec.ProvisioningModel == machinev1.GCPSpotInstance {
+		metric = "SPOT_" + metric
 	}
 
 	// check quota for GA
@@ -193,6 +195,7 @@ func (r *Reconciler) create() error {
 		},
 		Scheduling: &compute.Scheduling{
 			Preemptible:       r.providerSpec.Preemptible,
+			ProvisioningModel: strings.ToUpper(string(r.providerSpec.ProvisioningModel)),
 			OnHostMaintenance: string(r.providerSpec.OnHostMaintenance),
 		},
 		ShieldedInstanceConfig: &compute.ShieldedInstanceConfig{
@@ -210,7 +213,9 @@ func (r *Reconciler) create() error {
 		ResourceManagerTags: userTags,
 	}
 
-	if automaticRestart, err := restartPolicyToBool(r.providerSpec.RestartPolicy, r.providerSpec.Preemptible); err != nil {
+	preemptibleType := r.providerSpec.Preemptible || r.providerSpec.ProvisioningModel == machinev1.GCPSpotInstance
+
+	if automaticRestart, err := restartPolicyToBool(r.providerSpec.RestartPolicy, preemptibleType); err != nil {
 		return machinecontroller.InvalidMachineConfiguration("failed to determine restart policy: %v", err)
 	} else {
 		instance.Scheduling.AutomaticRestart = automaticRestart
@@ -519,7 +524,7 @@ func (r *Reconciler) setMachineCloudProviderSpecifics(instance *compute.Instance
 	r.machine.Labels[machinecontroller.MachineRegionLabelName] = r.providerSpec.Region
 	r.machine.Labels[machinecontroller.MachineAZLabelName] = r.providerSpec.Zone
 
-	if r.providerSpec.Preemptible {
+	if r.providerSpec.Preemptible || r.providerSpec.ProvisioningModel == machinev1.GCPSpotInstance {
 		// Label on the Machine so that an MHC can select Preemptible instances
 		r.machine.Labels[machinecontroller.MachineInterruptibleInstanceLabelName] = ""
 
@@ -563,6 +568,14 @@ func validateMachine(machine machinev1.Machine, providerSpec machinev1.GCPMachin
 
 	if machine.Labels[machinev1.MachineClusterIDLabel] == "" {
 		return machinecontroller.InvalidMachineConfiguration("machine is missing %q label", machinev1.MachineClusterIDLabel)
+	}
+
+	if providerSpec.ProvisioningModel != "" && providerSpec.ProvisioningModel != machinev1.GCPSpotInstance {
+		return machinecontroller.InvalidMachineConfiguration("provisioning model only supports 'Spot' instances on GCP")
+	}
+
+	if providerSpec.Preemptible && providerSpec.ProvisioningModel == machinev1.GCPSpotInstance {
+		return machinecontroller.InvalidMachineConfiguration("machine cannot be provisioned when preemptible is enabled and provisioning model is 'Spot' type")
 	}
 
 	return nil
